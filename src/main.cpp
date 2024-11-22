@@ -1,21 +1,15 @@
 #include <Arduino.h>
-#include <DHT.h>
+#include <Wire.h>
 
-// 设置DHT11的数据引脚
-#define DHTPIN 4
-// 设置使用的DHT类型，这里我们使用了DHT11
-#define DHTTYPE DHT11   // DHT 11
-//#define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
-//#define DHTTYPE DHT21   // DHT 21 (AM2301)
+const int resetLedPin = 2;
 
-DHT dht(DHTPIN, DHTTYPE);
-
-const int ledSetUP = 2;
+int SDA_ADDR = SDA; // sda 21 pin
+int SCL_ADDR = SCL; // scl 22 pin
 
 int seg_1 = 5;
 int seg_2 = 18;
 int seg_3 = 19;
-int seg_4 = 21;
+int seg_4 = 15;
 
 // 定义位选线数组
 int seg_array[4] = {seg_1, seg_2, seg_3, seg_4};
@@ -44,7 +38,7 @@ int led_array[8] = {a, b, c, d, e, f, g, dp};
  */
 
 // 定义共阴极数码管不同数字对应的逻辑电平的二维数组
-int logic_array[10][8] = {
+int number_array[10][8] = {
  //a, b, c, d, e, f, g, dp
   {1, 1, 1, 1, 1, 1, 0, 0}, // 0
   {0, 1, 1, 0, 0, 0, 0, 0}, // 1
@@ -66,24 +60,39 @@ int arr_L[8]   = {0, 0, 0, 1, 1, 1, 0, 0};
 
 hw_timer_t *timer = NULL;
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
-volatile bool timerFlag = false;
+volatile bool timerExpired = false;
 
 // 定时器中断服务函数
 void IRAM_ATTR onTimer() {
     portENTER_CRITICAL_ISR(&timerMux);
-    timerFlag = true;
+    timerExpired = true;
     portEXIT_CRITICAL_ISR(&timerMux);
+    Serial.println("[onTimer] time up.");
 }
 
-void resetTimer(){
-    portENTER_CRITICAL(&timerMux);
-    timerFlag = false;
-    portEXIT_CRITICAL(&timerMux);
-    timerAlarmDisable(timer);  // 启动定时器
+void setupTimer(){
+  timer = timerBegin(0, 80, true);  // 使用定时器0，预分频系数为80，向上计数模式
+  timerAttachInterrupt(timer, &onTimer, true);  // 绑定中断服务函数，边沿触发
+  // 设置定时器的自动重装载值，使得定时周期大约为-1秒
+  uint64_t time_value = 3 * 1000000;
+  timerAlarmWrite(timer, time_value, true);  // 以微秒为单位，这里设置为 3000000 微秒即3秒
+}
+
+void stopTimer(){
+  timerAlarmDisable(timer);
+  Serial.println("[stopTimer] started.");
+}
+
+void startTimer(){
+  portENTER_CRITICAL(&timerMux);
+  timerExpired = false;
+  portEXIT_CRITICAL(&timerMux);
+  timerAlarmEnable(timer);
+  Serial.printf("[startTimeer] rested. timerExpired value: %d \n", timerExpired);
 }
 
 // 清屏函数
-void clear() {
+void clearDiplay() {
   for (int i=0;i<4;i++) {
     digitalWrite(seg_array[i], HIGH);
   }
@@ -92,45 +101,45 @@ void clear() {
   }
 }
 
-void setup() {
-  pinMode(ledSetUP, OUTPUT);
-  digitalWrite(ledSetUP, HIGH);
+void setupSHT(){
+  Wire.begin(SDA_ADDR, SCL_ADDR);
+}
 
-  timer = timerBegin(0, 80, true);  // 使用定时器0，预分频系数为80，向上计数模式
-  timerAttachInterrupt(timer, &onTimer, true);  // 绑定中断服务函数，边沿触发
-  // 设置定时器的自动重装载值，使得定时周期大约为-1秒
-  timerAlarmWrite(timer, 3000000, true);  // 以微秒为单位，这里设置为1000000微秒即1秒
-  // timerAlarmEnable(timer);  // 启动定时器
-
-
-  dht.begin();
+void setupDisplay(){
    // 设置所有位选线引脚为输出模式，初始化所有位选线引脚为高电平
-  for (int i=-2;i<4;i++) {
+  for (int i=0;i<4;i++) {
     pinMode(seg_array[i], OUTPUT);
     digitalWrite(seg_array[i], HIGH);
   }
-
   // 设置所有段选线引脚为输出模式，初始化所有段选线引脚为低电平
-  for (int i=-2;i<8;i++) {
+  for (int i=0;i<8;i++) {
     pinMode(led_array[i], OUTPUT);
     digitalWrite(led_array[i], LOW);
   }
 }
 
+void setup() {
+  Serial.begin(115200);
+  pinMode(resetLedPin, OUTPUT);
+  digitalWrite(resetLedPin, HIGH);
+
+  setupSHT();
+  setupTimer();
+  setupDisplay();
+}
+
 void display_char(int param_1[8], int param_2[8], int param_3[8], int param_4[8]){
-  clear();
-  // param_2[7] = 1;
-  //int params [4][8] = {param_1, param_2, param_3, param_4};
-  // 把4位选线的电平拉低
-  timerAlarmEnable(timer);  // 启动定时器 
+  clearDiplay();
+  //启动定时器
+  startTimer();
   const int pwm = 5;
   while (1)
-  {
-    if (timerFlag) {
-      resetTimer();
-      Serial.println("timer time up");
+  { 
+    if (timerExpired) {
+      stopTimer();
       return;
     }
+
     digitalWrite(seg_1, LOW);
     for (int j=0;j<8;j++) {
       digitalWrite(led_array[j], param_1[j]);
@@ -155,23 +164,9 @@ void display_char(int param_1[8], int param_2[8], int param_3[8], int param_4[8]
     digitalWrite(seg_4, LOW);
     for (int j=0;j<8;j++) {
       digitalWrite(led_array[j], param_4[j]);
-    }  
+    }
     delay(pwm);
     digitalWrite(seg_4, HIGH);
-    }
-}
-
-// 显示数字的函数
-void display_number(int order, int number) {
-  // 清屏
-  clear();
-
-  // 把对应位选线的电平拉低
-  digitalWrite(seg_array[order], LOW);
-
-  // 显示数字
-  for (int i=0;i<8;i++) {
-    digitalWrite(led_array[i], logic_array[number][i]);
   }
 }
 
@@ -180,28 +175,49 @@ typedef struct{
   float temperature;
 } SensorParts;
 
-SensorParts readDHTSensors()
-{
+SensorParts readSHT30Sensor(){
   SensorParts result;
-  float h = dht.readHumidity();
-  float t = dht.readTemperature();
-
-  // 检查是否读取到传感器数据
-  if (isnan(h) || isnan(t)) {
-    Serial.println(F("Failed to read from DHT sensor!"));
+  unsigned int data[6];
+  
+  int _shtaddr = 0x44;
+  Wire.beginTransmission(_shtaddr);
+  Wire.write(0x2C);
+  Wire.write(0x06);
+  if (Wire.endTransmission()!=0){
+    Serial.print(F("endTransmission fail."));
+    Serial.println();
     return result;
   }
-  result.humidity = h;
-  result.temperature = t;
-  // 串口打印数据日志
+
+  delay(500);
+  Wire.requestFrom(_shtaddr, 6);
+  for (int i=0;i<6;i++) {
+		data[i]=Wire.read();
+  };
+  int avaRet = Wire.available();
+  Serial.printf("Wire.available result: %d \n", avaRet);
+
+  if (avaRet != 0){
+    Serial.print(F("wire not avaliable. \n"));
+    return result;
+  }
+
+	// Convert the data
+	float cTemp = ((((data[0] * 256.0) + data[1]) * 175) / 65535.0) - 45;
+	float fTemp = (cTemp * 1.8) + 32;
+	float humidity = ((((data[3] * 256.0) + data[4]) * 100) / 65535.0);
+
+  //   // 串口打印数据日志
   Serial.print(F("Humidity: "));
-  Serial.print(h);
+  Serial.print(humidity);
   Serial.print(F("%  Temperature: "));
-  Serial.print(t);
+  Serial.print(cTemp);
   Serial.println();
+
+  result.humidity = humidity;
+  result.temperature = cTemp;
   return result;
 }
-
 
 // 定义结构体用于返回多个值
 typedef struct {
@@ -228,26 +244,20 @@ NumParts extractFloatParts(float num) {
 
 void loop() {
   Serial.println("start a new loop");
-  digitalWrite(ledSetUP, HIGH);
+  digitalWrite(resetLedPin, HIGH);
 
-  SensorParts sensorParts = readDHTSensors();
+  // SensorParts sensorParts = readDHTSensors();
+  SensorParts sensorParts = readSHT30Sensor();
+
   NumParts tempParts = extractFloatParts(sensorParts.temperature);
   NumParts humParts = extractFloatParts(sensorParts.humidity);
 
   Serial.println("start display temperature...");
-  // int arr_0d0[] = logic_array[0];
-  display_char(logic_array[tempParts.ten], logic_array[tempParts.unit], logic_array[tempParts.tenth], arr_c);
-  delay(500);
-  // 按顺序让所有位置显示 0~9
-  // for (int i=0;i<4;i++) {
-  //  for (int j=0;j<10;j++) {
-  //    display_number(i, j);
-  //    delay(200);
-  //  }
-  // }
-  Serial.println("start diplay humidity...");
-  digitalWrite(ledSetUP, LOW);
+  display_char(number_array[tempParts.ten], number_array[tempParts.unit], number_array[tempParts.tenth], arr_c);
   delay(200);
-  display_char(logic_array[humParts.ten], logic_array[humParts.unit], logic_array[humParts.tenth], arr_H);
-  delay(300);
+
+  Serial.println("start diplay humidity...");
+  digitalWrite(resetLedPin, LOW);
+  display_char(number_array[humParts.ten], number_array[humParts.unit], number_array[humParts.tenth], arr_H);
+
 }
