@@ -1,5 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
+#include <Ticker.h>
+#include <mutex>
 
 const int resetLedPin = 2;
 
@@ -52,43 +54,37 @@ int number_array[10][8] = {
   {1, 1, 1, 1, 0, 1, 1, 0}, // 9
 };
 
-//                 a, b, c, d, e, f, g, dp
+//                a, b, c, d, e, f, g, dp
 int arr_dep[8] = {0, 0, 0, 0, 0, 0, 0, 1};
 int arr_H[8]   = {0, 1, 1, 0, 1, 1, 1, 0}; //H for humity unit, and High mean reach max
 int arr_c[8]   = {0, 0, 0, 1, 1, 0, 1, 0}; //c for temprature unit
 int arr_L[8]   = {0, 0, 0, 1, 1, 1, 0, 0};
 
-hw_timer_t *timer = NULL;
-portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
-volatile bool timerExpired = false;
+Ticker timer;
+volatile bool timer_expired = false;
+std::mutex timer_mux;
 
-// 定时器中断服务函数
-void IRAM_ATTR onTimer() {
-    portENTER_CRITICAL_ISR(&timerMux);
-    timerExpired = true;
-    portEXIT_CRITICAL_ISR(&timerMux);
-    Serial.println("[onTimer] time up.");
+const int timer_default_duration_ms = 3000;
+
+void safe_set_timer_expired(bool val){
+  std::lock_guard<std::mutex> lck(timer_mux);
+  timer_expired = val;
 }
 
-void setupTimer(){
-  timer = timerBegin(0, 80, true);  // 使用定时器0，预分频系数为80，向上计数模式
-  timerAttachInterrupt(timer, &onTimer, true);  // 绑定中断服务函数，边沿触发
-  // 设置定时器的自动重装载值，使得定时周期大约为-1秒
-  uint64_t time_value = 3 * 1000000;
-  timerAlarmWrite(timer, time_value, true);  // 以微秒为单位，这里设置为 3000000 微秒即3秒
+// 定时器中断服务函数
+void  onTimer() {
+  safe_set_timer_expired(true);
 }
 
 void stopTimer(){
-  timerAlarmDisable(timer);
+  timer.detach();
   Serial.println("[stopTimer] started.");
 }
 
 void startTimer(){
-  portENTER_CRITICAL(&timerMux);
-  timerExpired = false;
-  portEXIT_CRITICAL(&timerMux);
-  timerAlarmEnable(timer);
-  Serial.printf("[startTimeer] rested. timerExpired value: %d \n", timerExpired);
+  safe_set_timer_expired(false);
+  timer.attach_ms(timer_default_duration_ms, onTimer);
+  Serial.printf("[startTimeer] rested. timerExpired value: %d \n", timer_expired);
 }
 
 // 清屏函数
@@ -124,7 +120,6 @@ void setup() {
   digitalWrite(resetLedPin, HIGH);
 
   setupSHT();
-  setupTimer();
   setupDisplay();
 }
 
@@ -135,7 +130,7 @@ void display_char(int param_1[8], int param_2[8], int param_3[8], int param_4[8]
   const int pwm = 5;
   while (1)
   { 
-    if (timerExpired) {
+    if (timer_expired) {
       stopTimer();
       return;
     }
